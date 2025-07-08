@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +68,10 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private const val TAG = "MainActivity"
+    }
+
     @Inject
     lateinit var bluetoothManager: BluetoothManagerHelper
 
@@ -74,20 +80,34 @@ class MainActivity : ComponentActivity() {
 
     private val enableBluetoothLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { /* Handle Bluetooth enable result if needed */ }
+    ) { result ->
+        Log.d(TAG, "Bluetooth enable result: ${result.resultCode}")
+        if (result.resultCode == RESULT_OK) {
+            // Bluetooth was enabled, refresh state
+            bluetoothManager.forceRefresh()
+        }
+    }
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
+        Log.d(TAG, "Permission results: $permissions")
         val allGranted = permissions.values.all { it }
+
         if (allGranted) {
-            // Permissions granted, you can now use Bluetooth
+            Log.d(TAG, "All permissions granted, registering receiver")
             bluetoothManager.registerReceiver()
+        } else {
+            Log.w(TAG, "Not all permissions granted")
+            val deniedPermissions = permissions.filterValues { !it }.keys
+            Log.w(TAG, "Denied permissions: $deniedPermissions")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        Log.d(TAG, "MainActivity onCreate")
 
         val sender = ActivityResultSender(this)
 
@@ -111,19 +131,28 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "MainActivity onDestroy")
         bluetoothManager.unregisterReceiver()
         usbManager.unregisterReceiver()
     }
 
     private fun checkAndRequestPermissions() {
+        Log.d(TAG, "Checking permissions...")
+
         val requiredPermissions = bluetoothManager.getRequiredPermissions()
+        Log.d(TAG, "Required permissions: $requiredPermissions")
+
         val permissionsToRequest = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            val granted = ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+            Log.d(TAG, "Permission $it: $granted")
+            !granted
         }
 
         if (permissionsToRequest.isNotEmpty()) {
+            Log.d(TAG, "Requesting permissions: $permissionsToRequest")
             requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         } else {
+            Log.d(TAG, "All permissions already granted, registering receiver")
             bluetoothManager.registerReceiver()
         }
     }
@@ -143,6 +172,8 @@ fun MainScreen(
     val usbState by (usbManager?.usbState?.collectAsState() ?: remember { mutableStateOf(null) })
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+
+    var showBluetoothDebug by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -223,20 +254,59 @@ fun MainScreen(
                 }
             }
 
-            // Bluetooth Section
+            // Add this enhanced Bluetooth section to your MainActivity.kt in place of the existing Bluetooth section
+
+// Enhanced Bluetooth Section with Troubleshooting
             item {
                 Section(sectionTitle = "Bluetooth:") {
                     bluetoothState?.let { state ->
                         Text("Bluetooth Enabled: ${state.isEnabled}")
                         Text("Scanning: ${state.isScanning}")
+                        Text("Permissions: ${state.permissionsGranted}")
+                        Text("Location: ${state.locationEnabled}")
+                        Text("Devices Found: ${state.devices.size}")
+                        Text("Adapter State: ${state.adapterState}")
+
+                        if (state.discoveryAttempts > 0) {
+                            Text("Discovery Attempts: ${state.discoveryAttempts}")
+                            Text("Last Method: ${state.lastDiscoveryMethod}")
+                        }
 
                         if (state.errorMessage != null) {
                             Text(
-                                text = "Error: ${state.errorMessage}",
-                                color = Color.Red
+                                text = "Status: ${state.errorMessage}",
+                                color = if (state.errorMessage.contains("Error") ||
+                                    state.errorMessage.contains("failed")) Color.Red else Color.Blue,
+                                modifier = Modifier.padding(vertical = 4.dp)
                             )
                         }
 
+                        // Debug toggle button
+                        Button(
+                            onClick = { showBluetoothDebug = !showBluetoothDebug },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (showBluetoothDebug) "Hide Debug Info" else "Show Debug Info")
+                        }
+
+                        // Debug information
+                        if (showBluetoothDebug) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = bluetoothManager?.getBluetoothStatus() ?: "Debug info unavailable",
+                                    modifier = Modifier.padding(12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
+                        }
+
+                        // Primary action buttons
                         Row {
                             Button(
                                 onClick = {
@@ -251,6 +321,7 @@ fun MainScreen(
                                             context.startActivity(enableBtIntent)
                                         }
                                     } else {
+                                        Log.d("MainActivity", "Starting Bluetooth discovery")
                                         bluetoothManager?.startDiscovery()
                                     }
                                 },
@@ -270,7 +341,54 @@ fun MainScreen(
                                 ) {
                                     Text("Stop Scan")
                                 }
+                            } else {
+                                Button(
+                                    onClick = { bluetoothManager?.forceRefresh() },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 4.dp)
+                                ) {
+                                    Text("Refresh")
+                                }
                             }
+                        }
+
+                        // Troubleshooting buttons
+                        if (state.errorMessage?.contains("returned false") == true) {
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                "Troubleshooting Options:",
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            Row {
+                                Button(
+                                    onClick = { bluetoothManager?.resetAndRetryDiscovery() },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 4.dp)
+                                ) {
+                                    Text("Reset & Retry")
+                                }
+
+                                Button(
+                                    onClick = { bluetoothManager?.tryAlternativeDiscovery() },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 4.dp)
+                                ) {
+                                    Text("Alternative")
+                                }
+                            }
+
+                            Text(
+                                "Tips:\n• Make another device discoverable\n• Restart Bluetooth in Settings\n• Try scanning from Settings first",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
                         }
 
                         if (state.devices.isNotEmpty()) {
@@ -279,19 +397,19 @@ fun MainScreen(
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(top = 8.dp)
                             )
+                        } else if (state.isEnabled && !state.isScanning) {
+                            Text(
+                                "No devices found. Make sure other devices are discoverable (Bluetooth settings open).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
                         }
                     }
                 }
             }
 
-            // Bluetooth devices list
-            bluetoothState?.devices?.let { devices ->
-                items(devices) { device ->
-                    BluetoothDeviceCard(device)
-                }
-            }
-
-            // USB Section
+            // USB Section (keeping your existing implementation)
             item {
                 Section(sectionTitle = "USB Devices:") {
                     usbState?.let { state ->
@@ -330,36 +448,6 @@ fun MainScreen(
             usbState?.devices?.let { devices ->
                 items(devices) { device ->
                     UsbDeviceCard(device, usbManager)
-                }
-            }
-
-            // Test Section
-            item {
-                Section(sectionTitle = "Quick Tests:") {
-                    Button(
-                        onClick = {
-                            bluetoothManager?.let { btManager ->
-                                if (btManager.isBluetoothEnabled()) {
-                                    btManager.startDiscovery()
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Test Bluetooth Scan")
-                    }
-
-                    Button(
-                        onClick = {
-                            usbManager?.let { usbMgr ->
-                                val devices = usbMgr.getConnectedDevices()
-                                // This will trigger state update and show devices
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Test USB Detection")
-                    }
                 }
             }
 
@@ -447,6 +535,10 @@ fun BluetoothDeviceCard(device: android.bluetooth.BluetoothDevice) {
                 text = "Bond State: ${getBondStateString(device.bondState)}",
                 style = MaterialTheme.typography.bodySmall
             )
+            Text(
+                text = "Type: ${getDeviceTypeString(device.type)}",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
@@ -517,6 +609,15 @@ private fun getBondStateString(bondState: Int): String {
         android.bluetooth.BluetoothDevice.BOND_NONE -> "Not Paired"
         android.bluetooth.BluetoothDevice.BOND_BONDING -> "Pairing..."
         android.bluetooth.BluetoothDevice.BOND_BONDED -> "Paired"
+        else -> "Unknown"
+    }
+}
+
+private fun getDeviceTypeString(deviceType: Int): String {
+    return when (deviceType) {
+        android.bluetooth.BluetoothDevice.DEVICE_TYPE_CLASSIC -> "Classic"
+        android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE -> "Low Energy"
+        android.bluetooth.BluetoothDevice.DEVICE_TYPE_DUAL -> "Dual Mode"
         else -> "Unknown"
     }
 }
