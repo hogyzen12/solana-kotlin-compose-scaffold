@@ -1,11 +1,16 @@
 package com.example.solanakotlincomposescaffold
 
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -26,12 +33,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.solanakotlincomposescaffold.managers.BluetoothManagerHelper
+import com.example.solanakotlincomposescaffold.managers.UsbManagerHelper
 import com.example.solanakotlincomposescaffold.ui.theme.SolanaKotlinComposeScaffoldTheme
 import com.example.solanakotlincomposescaffold.viewmodel.MainViewModel
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
@@ -40,8 +53,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import com.solana.publickey.SolanaPublicKey
 import androidx.compose.foundation.text.ClickableText
@@ -50,9 +61,31 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import com.funkatronics.encoders.Base58
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var bluetoothManager: BluetoothManagerHelper
+
+    @Inject
+    lateinit var usbManager: UsbManagerHelper
+
+    private val enableBluetoothLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* Handle Bluetooth enable result if needed */ }
+
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            // Permissions granted, you can now use Bluetooth
+            bluetoothManager.registerReceiver()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -60,16 +93,38 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SolanaKotlinComposeScaffoldTheme {
-                // A surface container using the 'background' color from the theme
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Column() {
-                        MainScreen(sender)
-                    }
+                    MainScreen(sender, bluetoothManager, usbManager)
                 }
             }
+        }
+
+        // Check and request permissions
+        checkAndRequestPermissions()
+
+        // Register USB manager receiver
+        usbManager.registerReceiver()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bluetoothManager.unregisterReceiver()
+        usbManager.unregisterReceiver()
+    }
+
+    private fun checkAndRequestPermissions() {
+        val requiredPermissions = bluetoothManager.getRequiredPermissions()
+        val permissionsToRequest = requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
+        } else {
+            bluetoothManager.registerReceiver()
         }
     }
 }
@@ -79,11 +134,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(
     intentSender: ActivityResultSender? = null,
+    bluetoothManager: BluetoothManagerHelper? = null,
+    usbManager: UsbManagerHelper? = null,
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val viewState by viewModel.viewState.collectAsState()
+    val bluetoothState by (bluetoothManager?.bluetoothState?.collectAsState() ?: remember { mutableStateOf(null) })
+    val usbState by (usbManager?.usbState?.collectAsState() ?: remember { mutableStateOf(null) })
     val snackbarHostState = remember { SnackbarHostState() }
-    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -91,8 +150,7 @@ fun MainScreen(
                 text = "Solana Compose dApp Scaffold",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .padding(all = 24.dp)
+                modifier = Modifier.padding(all = 24.dp)
             )
         },
         containerColor = Color.Transparent,
@@ -112,101 +170,356 @@ fun MainScreen(
             }
         }
 
-        Column(
-            modifier = Modifier
-                .padding(padding)
+        LazyColumn(
+            modifier = Modifier.padding(padding)
         ) {
-
-            Section(
-                sectionTitle = "Messages:",
-            ) {
-                Button(
-                    onClick = {
-                        if (intentSender != null && viewState.canTransact)
-                            viewModel.signMessage(intentSender, "Hello Solana!")
-                        else
-                            viewModel.disconnect()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(text = "Sign a message")
-                }
-            }
-
-            Section(
-                sectionTitle = "Transactions:",
-            ) {
-                Button(
-                    onClick = {
-                        if (intentSender != null && viewState.canTransact)
-                            viewModel.signTransaction(intentSender)
-                        else
-                            viewModel.disconnect()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(text = "Sign a Transaction (deprecated)")
-                }
-                Button(
-                    onClick = {
-                        if (intentSender != null && viewState.canTransact)
-                            viewModel.publishMemo(intentSender, "Hello Solana!")
-                        else
-                            viewModel.disconnect()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(text = "Send a Memo Transaction")
-                }
-
-                val memoTxSignature = viewState.memoTxSignature
-                if (memoTxSignature != null) {
-                    ExplorerHyperlink(memoTxSignature)
-                }
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            if (viewState.canTransact)
-                AccountInfo(
-                    walletName = viewState.userLabel,
-                    address = viewState.userAddress,
-                    balance = viewState.solBalance
-                )
-
-            Row() {
-                if (viewState.canTransact)
+            // Messages Section
+            item {
+                Section(sectionTitle = "Messages:") {
                     Button(
                         onClick = {
-                            viewModel.requestAirdrop(SolanaPublicKey(Base58.decode(viewState.userAddress)))
+                            if (intentSender != null && viewState.canTransact)
+                                viewModel.signMessage(intentSender, "Hello Solana!")
+                            else
+                                viewModel.disconnect()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(text = "Sign a message")
+                    }
+                }
+            }
+
+            // Transactions Section
+            item {
+                Section(sectionTitle = "Transactions:") {
+                    Button(
+                        onClick = {
+                            if (intentSender != null && viewState.canTransact)
+                                viewModel.signTransaction(intentSender)
+                            else
+                                viewModel.disconnect()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(text = "Sign a Transaction (deprecated)")
+                    }
+                    Button(
+                        onClick = {
+                            if (intentSender != null && viewState.canTransact)
+                                viewModel.publishMemo(intentSender, "Hello Solana!")
+                            else
+                                viewModel.disconnect()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(text = "Send a Memo Transaction")
+                    }
+
+                    val memoTxSignature = viewState.memoTxSignature
+                    if (memoTxSignature != null) {
+                        ExplorerHyperlink(memoTxSignature)
+                    }
+                }
+            }
+
+            // Bluetooth Section
+            item {
+                Section(sectionTitle = "Bluetooth:") {
+                    bluetoothState?.let { state ->
+                        Text("Bluetooth Enabled: ${state.isEnabled}")
+                        Text("Scanning: ${state.isScanning}")
+
+                        if (state.errorMessage != null) {
+                            Text(
+                                text = "Error: ${state.errorMessage}",
+                                color = Color.Red
+                            )
+                        }
+
+                        Row {
+                            Button(
+                                onClick = {
+                                    if (!state.isEnabled) {
+                                        val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                        if (ActivityCompat.checkSelfPermission(
+                                                context,
+                                                Manifest.permission.BLUETOOTH_CONNECT
+                                            ) == PackageManager.PERMISSION_GRANTED ||
+                                            Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+                                        ) {
+                                            context.startActivity(enableBtIntent)
+                                        }
+                                    } else {
+                                        bluetoothManager?.startDiscovery()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 4.dp)
+                            ) {
+                                Text(if (state.isEnabled) "Scan Devices" else "Enable Bluetooth")
+                            }
+
+                            if (state.isScanning) {
+                                Button(
+                                    onClick = { bluetoothManager?.stopDiscovery() },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 4.dp)
+                                ) {
+                                    Text("Stop Scan")
+                                }
+                            }
+                        }
+
+                        if (state.devices.isNotEmpty()) {
+                            Text(
+                                "Found Devices (${state.devices.size}):",
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bluetooth devices list
+            bluetoothState?.devices?.let { devices ->
+                items(devices) { device ->
+                    BluetoothDeviceCard(device)
+                }
+            }
+
+            // USB Section
+            item {
+                Section(sectionTitle = "USB Devices:") {
+                    usbState?.let { state ->
+                        if (state.errorMessage != null) {
+                            Text(
+                                text = state.errorMessage,
+                                color = if (state.errorMessage.contains("Error") ||
+                                    state.errorMessage.contains("denied")) Color.Red else Color.Blue
+                            )
+                        }
+
+                        Text("Connected USB Devices: ${state.devices.size}")
+
+                        state.connectedDevice?.let { device ->
+                            Text(
+                                "Active Connection: ${device.deviceName}",
+                                color = Color.Green,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                // Refresh USB device list
+                                // This will automatically update through the state flow
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Refresh USB Devices")
+                        }
+                    }
+                }
+            }
+
+            // USB devices list
+            usbState?.devices?.let { devices ->
+                items(devices) { device ->
+                    UsbDeviceCard(device, usbManager)
+                }
+            }
+
+            // Test Section
+            item {
+                Section(sectionTitle = "Quick Tests:") {
+                    Button(
+                        onClick = {
+                            bluetoothManager?.let { btManager ->
+                                if (btManager.isBluetoothEnabled()) {
+                                    btManager.startDiscovery()
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Test Bluetooth Scan")
+                    }
+
+                    Button(
+                        onClick = {
+                            usbManager?.let { usbMgr ->
+                                val devices = usbMgr.getConnectedDevices()
+                                // This will trigger state update and show devices
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Test USB Detection")
+                    }
+                }
+            }
+
+            // Account info and connection buttons
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (viewState.canTransact) {
+                    AccountInfo(
+                        walletName = viewState.userLabel,
+                        address = viewState.userAddress,
+                        balance = viewState.solBalance
+                    )
+                }
+
+                Row {
+                    if (viewState.canTransact) {
+                        Button(
+                            onClick = {
+                                viewModel.requestAirdrop(SolanaPublicKey(Base58.decode(viewState.userAddress)))
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 4.dp)
+                                .fillMaxWidth()
+                        ) {
+                            Text("Request Airdrop")
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            if (intentSender != null && !viewState.canTransact)
+                                viewModel.connect(intentSender)
+                            else
+                                viewModel.disconnect()
                         },
                         modifier = Modifier
                             .weight(1f)
-                            .padding(end = 4.dp)
+                            .padding(start = 4.dp)
                             .fillMaxWidth()
-
                     ) {
-                        Text("Request Airdrop")
+                        Text(if (viewState.canTransact) "Disconnect" else "Connect")
                     }
-                Button(
-                    onClick = {
-                        if (intentSender != null && !viewState.canTransact)
-                            viewModel.connect(intentSender)
-                        else
-                            viewModel.disconnect()
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 4.dp)
-                        .fillMaxWidth()
-                ) {
-                    Text(if (viewState.canTransact) "Disconnect" else "Connect")
                 }
             }
         }
     }
 }
 
+@Composable
+fun BluetoothDeviceCard(device: android.bluetooth.BluetoothDevice) {
+    Card(
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .padding(vertical = 4.dp)
+            .fillMaxWidth()
+            .border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            val context = LocalContext.current
+            val deviceName = if (ActivityCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                device.name ?: "Unknown Device"
+            } else {
+                "Permission Required"
+            }
+
+            Text(
+                text = deviceName,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = device.address,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.Gray
+            )
+            Text(
+                text = "Bond State: ${getBondStateString(device.bondState)}",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
+@Composable
+fun UsbDeviceCard(device: android.hardware.usb.UsbDevice, usbManager: UsbManagerHelper?) {
+    Card(
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .padding(vertical = 4.dp)
+            .fillMaxWidth()
+            .border(1.dp, Color.Gray, RoundedCornerShape(8.dp))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Text(
+                text = device.deviceName,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                device.productName?.let { productName ->
+                    Text(
+                        text = "Product: $productName",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                device.manufacturerName?.let { manufacturer ->
+                    Text(
+                        text = "Manufacturer: $manufacturer",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray
+                    )
+                }
+            }
+
+            Text(
+                text = "Vendor ID: ${device.vendorId}, Product ID: ${device.productId}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+
+            val hasPermission = usbManager?.hasPermission(device) ?: false
+            Text(
+                text = "Permission: ${if (hasPermission) "Granted" else "Not Granted"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (hasPermission) Color.Green else Color.Red
+            )
+
+            Button(
+                onClick = {
+                    usbManager?.connectToDevice(device)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (hasPermission) "Connect" else "Request Permission")
+            }
+        }
+    }
+}
+
+private fun getBondStateString(bondState: Int): String {
+    return when (bondState) {
+        android.bluetooth.BluetoothDevice.BOND_NONE -> "Not Paired"
+        android.bluetooth.BluetoothDevice.BOND_BONDING -> "Pairing..."
+        android.bluetooth.BluetoothDevice.BOND_BONDED -> "Paired"
+        else -> "Unknown"
+    }
+}
 
 @Composable
 fun Section(sectionTitle: String, content: @Composable () -> Unit) {
@@ -240,19 +553,16 @@ fun AccountInfo(walletName: String, address: String, balance: Number) {
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Bold,
             )
-            // Wallet name and address
             Text(
                 text = "$walletName ($address)",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray
             )
 
-
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Account balance
             Text(
-                text = "$balance SOL", // TODO: Nicely format the displayed number (e.g: 0.089 SOL)
+                text = "$balance SOL",
                 style = MaterialTheme.typography.headlineLarge
             )
         }
@@ -286,4 +596,3 @@ fun openUrl(context: Context, url: String) {
     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
     context.startActivity(intent)
 }
-

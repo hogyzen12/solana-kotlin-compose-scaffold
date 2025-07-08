@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- This allows your app to detect any USB device -->
+    <usb-device class="255" subclass="255" protocol="255" />
+
+    <!-- You can also specify specific vendor/product IDs if needed -->
+    <!-- Example for a specific device:
+    <usb-device vendor-id="1234" product-id="5678" />
+    -->
+</resources>
