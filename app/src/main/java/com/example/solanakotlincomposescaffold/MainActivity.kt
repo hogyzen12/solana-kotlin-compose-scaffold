@@ -36,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,6 +48,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.solanakotlincomposescaffold.managers.BluetoothManagerHelper
 import com.example.solanakotlincomposescaffold.managers.UsbManagerHelper
+import com.example.solanakotlincomposescaffold.managers.ESP32SignerManager
 import com.example.solanakotlincomposescaffold.ui.theme.SolanaKotlinComposeScaffoldTheme
 import com.example.solanakotlincomposescaffold.viewmodel.MainViewModel
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
@@ -63,6 +65,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import com.funkatronics.encoders.Base58
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -77,6 +80,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var usbManager: UsbManagerHelper
+
+    @Inject
+    lateinit var esp32SignerManager: ESP32SignerManager
 
     private val enableBluetoothLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -117,7 +123,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MainScreen(sender, bluetoothManager, usbManager)
+                    MainScreen(sender, bluetoothManager, usbManager, esp32SignerManager)
                 }
             }
         }
@@ -165,6 +171,7 @@ fun MainScreen(
     intentSender: ActivityResultSender? = null,
     bluetoothManager: BluetoothManagerHelper? = null,
     usbManager: UsbManagerHelper? = null,
+    esp32SignerManager: ESP32SignerManager? = null,
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val viewState by viewModel.viewState.collectAsState()
@@ -172,6 +179,7 @@ fun MainScreen(
     val usbState by (usbManager?.usbState?.collectAsState() ?: remember { mutableStateOf(null) })
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     var showBluetoothDebug by remember { mutableStateOf(false) }
 
@@ -254,9 +262,140 @@ fun MainScreen(
                 }
             }
 
-            // Add this enhanced Bluetooth section to your MainActivity.kt in place of the existing Bluetooth section
+            // ESP32 Hardware Signer Section
+            item {
+                Section(sectionTitle = "ESP32 Hardware Signer:") {
+                    val esp32State by (esp32SignerManager?.signerState?.collectAsState() ?: remember { mutableStateOf(null) })
+                    
+                    esp32State?.let { state ->
+                        // Connection status
+                        if (state.isConnected) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                colors = androidx.compose.material3.CardDefaults.cardColors(
+                                    containerColor = Color.Green.copy(alpha = 0.1f)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp)
+                                ) {
+                                    Text(
+                                        "ESP32 Connected ✅",
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.Green
+                                    )
+                                    state.esp32PublicKey?.let { pubkey ->
+                                        Text(
+                                            "Public Key: ${pubkey.take(12)}...${pubkey.takeLast(12)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    }
+                                    if (state.isWaitingForButtonPress) {
+                                        Text(
+                                            "📱 Press the BOOT button on ESP32 to confirm...",
+                                            color = Color.Blue,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.padding(top = 8.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
-// Enhanced Bluetooth Section with Troubleshooting
+                        // Status messages
+                        if (state.errorMessage != null) {
+                            Text(
+                                text = state.errorMessage,
+                                color = when {
+                                    state.errorMessage.contains("Error") || state.errorMessage.contains("Failed") -> Color.Red
+                                    state.errorMessage.contains("Connected") || state.errorMessage.contains("signed") -> Color.Green
+                                    else -> Color.Blue
+                                },
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        }
+
+                        // Action buttons
+                        if (state.isConnected) {
+                            // ESP32 is connected - show signing options
+                            Column {
+                                Button(
+                                    onClick = {
+                                        esp32SignerManager?.let { manager ->
+                                            coroutineScope.launch {
+                                                val testMessage = "Hello from ESP32!".toByteArray()
+                                                manager.signTransaction(testMessage)
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = !state.isWaitingForButtonPress
+                                ) {
+                                    Text(if (state.isWaitingForButtonPress) "Waiting for button press..." else "Test Sign Message")
+                                }
+
+                                Button(
+                                    onClick = {
+                                        esp32SignerManager?.disconnect()
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = Color.Red
+                                    )
+                                ) {
+                                    Text("Disconnect ESP32")
+                                }
+                            }
+                        } else {
+                            // ESP32 not connected - show connection options
+                            Column {
+                                Button(
+                                    onClick = {
+                                        esp32SignerManager?.let { manager ->
+                                            manager.clearError()
+                                            coroutineScope.launch {
+                                                manager.findESP32Device()
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Find ESP32 Device")
+                                }
+
+                                Button(
+                                    onClick = {
+                                        esp32SignerManager?.let { manager ->
+                                            manager.clearError()
+                                            coroutineScope.launch {
+                                                manager.connectToESP32()
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Connect to ESP32")
+                                }
+                            }
+                        }
+
+                        // Show last signature if available
+                        state.lastSignature?.let { signature ->
+                            Text(
+                                "Last Signature: ${signature.take(16)}...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Enhanced Bluetooth Section with Troubleshooting
             item {
                 Section(sectionTitle = "Bluetooth:") {
                     bluetoothState?.let { state ->

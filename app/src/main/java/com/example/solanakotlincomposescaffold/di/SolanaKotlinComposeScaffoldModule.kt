@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.net.Uri
 import com.example.solanakotlincomposescaffold.managers.BluetoothManagerHelper
 import com.example.solanakotlincomposescaffold.managers.UsbManagerHelper
+import com.example.solanakotlincomposescaffold.managers.ESP32SignerManager
 import com.solana.mobilewalletadapter.clientlib.ConnectionIdentity
 import com.solana.mobilewalletadapter.clientlib.MobileWalletAdapter
 import dagger.Module
@@ -52,5 +53,11 @@ class ManagerModule {
     @Singleton
     fun providesUsbManager(@ApplicationContext context: Context): UsbManagerHelper {
         return UsbManagerHelper(context)
+    }
+
+    @Provides
+    @Singleton
+    fun providesESP32SignerManager(usbManager: UsbManagerHelper): ESP32SignerManager {
+        return ESP32SignerManager(usbManager)
     }
 }

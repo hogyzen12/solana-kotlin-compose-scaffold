@@ -94,6 +94,10 @@ class UsbManagerHelper @Inject constructor(
         }
     }
 
+    fun getUsbManager(): UsbManager {
+        return usbManager
+    }
+
     fun getConnectedDevices(): List<UsbDevice> {
         return usbManager.deviceList.values.toList()
     }
